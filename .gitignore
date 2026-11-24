@@ -1,0 +1,14 @@
+# Build outputs and signing material
+**/build/
+**/.gradle/
+*.apk
+*.aab
+*.jks
+*.keystore
+*.pem
+*.key
+*.p12
+*.pfx
+*password*
+local.properties
+.DS_Store

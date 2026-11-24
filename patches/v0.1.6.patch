@@ -1,0 +1,150 @@
+--- v0.1.5/src/main/java/dev/songyuan/hdr/HdrPolicy.java
++++ v0.1.6/src/main/java/dev/songyuan/hdr/HdrPolicy.java
+@@ -1,8 +1,8 @@
+ package dev.songyuan.hdr;
+ 
+ final class HdrPolicy {
+-    static final String VERSION = "0.1.5";
+-    static final int VERSION_CODE = 6;
++    static final String VERSION = "0.1.6";
++    static final int VERSION_CODE = 7;
+     static final String MODULE = "dev.songyuan.hdr";
+     static final String CAMERA = "com.android.camera";
+     static final String TAG = "Songyuan200HDR";
+@@ -30,4 +30,15 @@
+         return "auto".equals(stockPreference) || "on".equals(stockPreference)
+                 || "normal".equals(stockPreference);
+     }
++
++    /**
++     * The 200MP profile exposes the stock Auto HDR component even when the
++     * stock scene checker never raises its HDR-scene callback. In Auto/On,
++     * feed a positive scene result through the stock state machine instead
++     * of writing vendor CaptureRequest tags behind the camera app's back.
++     */
++    static boolean shouldForceHighResScene(boolean highResolution,
++            String preference, boolean muted, boolean empty) {
++        return highResolution && activatesHdr(preference) && !muted && !empty;
++    }
+ }
+--- v0.1.5/src/main/java/dev/songyuan/hdr/HdrModule.java
++++ v0.1.6/src/main/java/dev/songyuan/hdr/HdrModule.java
+@@ -446,13 +446,31 @@
+                     return result;
+                 }));
+                 installed.add(intercept(applyHdrPreferences, chain -> {
++                    Object hdr = chain.getThisObject();
++                    if (shouldForceHighResScene(hdr)) {
++                        // Keep the stock preference-to-request path intact; only
++                        // supply the scene state it requires for 200MP Auto HDR.
++                        hdrScene.setBoolean(hdr, true);
++                        journal.update("scene_source", "MODULE_FORCED_200MP_AUTO_HDR");
++                    }
+                     Object result = chain.proceed();
+-                    inspectPreference(chain.getThisObject());
++                    inspectPreference(hdr);
+                     return result;
+                 }));
+                 installed.add(intercept(onHdrSceneChanged, chain -> {
+-                    Object result = chain.proceed();
+-                    inspectScene(chain.getThisObject());
++                    Object hdr = chain.getThisObject();
++                    boolean incoming = Boolean.TRUE.equals(chain.getArg(0));
++                    Object result;
++                    if (!incoming && shouldForceHighResScene(hdr)) {
++                        // The v0.1.5 hook only observed a false scene result.
++                        // Pass true into Xiaomi's original callback so its own
++                        // state machine builds the HDR request and exposure plan.
++                        journal.update("scene_source", "MODULE_FORCED_200MP_AUTO_HDR");
++                        result = chain.proceedWith(hdr, new Object[] {Boolean.TRUE});
++                    } else {
++                        result = chain.proceed();
++                    }
++                    inspectScene(hdr);
+                     return result;
+                 }));
+ 
+@@ -692,6 +710,21 @@
+             }
+         }
+ 
++        private boolean shouldForceHighResScene(Object hdr)
++                throws ReflectiveOperationException {
++            Config state = config;
++            if (!enabled || state == null || state.component.get() == null
++                    || !activeHighResOwner(hdr)) {
++                return false;
++            }
++            Object component = state.component.get();
++            String preference = (String) hdrValue.invoke(component, HdrPolicy.HIGH_RES_MODE);
++            boolean muted = Boolean.TRUE.equals(
++                    hdrMuted.invoke(component, HdrPolicy.HIGH_RES_MODE));
++            boolean empty = Boolean.TRUE.equals(hdrEmpty.invoke(component));
++            return HdrPolicy.shouldForceHighResScene(true, preference, muted, empty);
++        }
++
+         private void inspectPreference(Object hdr) {
+             try {
+                 if (!enabled || !activeHighResOwner(hdr)) {
+--- v0.1.5/src/main/java/dev/songyuan/hdr/StatusActivity.java
++++ v0.1.6/src/main/java/dev/songyuan/hdr/StatusActivity.java
+@@ -404,8 +404,11 @@
+         }
+         String mode = record.optString("mode");
+         String scene = record.optString("scene");
++        String sceneSource = record.optString("scene_source");
+         String sceneLabel;
+-        if ("true".equals(scene)) {
++        if ("MODULE_FORCED_200MP_AUTO_HDR".equals(sceneSource)) {
++            sceneLabel = "模块已将 HDR 场景交给原厂状态机";
++        } else if ("true".equals(scene)) {
+             sceneLabel = "最近检测到 HDR 场景";
+         } else if ("false".equals(scene)) {
+             sceneLabel = "最近一次判定未触发 HDR";
+--- v0.1.5/src/main/AndroidManifest.xml
++++ v0.1.6/src/main/AndroidManifest.xml
+@@ -1,5 +1,5 @@
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+-    package="dev.songyuan.hdr" android:versionCode="6" android:versionName="0.1.5">
++    package="dev.songyuan.hdr" android:versionCode="7" android:versionName="0.1.6">
+     <uses-sdk android:minSdkVersion="33" android:targetSdkVersion="36" />
+     <queries>
+         <package android:name="com.android.camera" />
+--- v0.1.5/tests/HdrPolicyTest.java
++++ v0.1.6/tests/HdrPolicyTest.java
+@@ -21,5 +21,12 @@
+         assert HdrPolicy.activatesHdr("on");
+         assert !HdrPolicy.activatesHdr("off");
+         assert !HdrPolicy.activatesHdr(null);
++        assert HdrPolicy.shouldForceHighResScene(true, "auto", false, false);
++        assert HdrPolicy.shouldForceHighResScene(true, "on", false, false);
++        assert HdrPolicy.shouldForceHighResScene(true, "normal", false, false);
++        assert !HdrPolicy.shouldForceHighResScene(false, "auto", false, false);
++        assert !HdrPolicy.shouldForceHighResScene(true, "off", false, false);
++        assert !HdrPolicy.shouldForceHighResScene(true, "auto", true, false);
++        assert !HdrPolicy.shouldForceHighResScene(true, "auto", false, true);
+     }
+ }
+--- v0.1.5/README.md
++++ v0.1.6/README.md
+@@ -1,6 +1,6 @@
+ # Redmi K100 Pro Max · 200MP HDR
+ 
+-适用设备为 Redmi K100 Pro Max（songyuan）、Android 17 / HyperOS 4，以及小米原签名系统相机 6.7.000280.0（版本代码 670002800）。v0.1.5 使用 libxposed API 102，支持该 API 的 LSPosed 版本可识别模块。
++适用设备为 Redmi K100 Pro Max（songyuan）、Android 17 / HyperOS 4，以及小米原签名系统相机 6.7.000280.0（版本代码 670002800）。v0.1.6 使用 libxposed API 102，支持该 API 的 LSPosed 版本可识别模块。
+ 
+ ## 安装与检查
+ 
+@@ -23,7 +23,11 @@
+ | 快门请求带 HDR | 模块从一个高像素快门请求读到厂商 HDR 启用字段 |
+ | 成片原图与融合信息 | 核对完整 200MP 分辨率以及后处理是否确实启用了 HDR 融合 |
+ 
+-原厂 HDR 组件保留场景判定和原有曝光选择。JPEG 厂商 EXIF 的 `Hdr` 字段可辅助验证。此前的一张 200MP 原图为 16384 × 12288 且标记 `Hdr=off`。v0.1.5 已构建并通过签名和包结构检查，装机注入及实拍融合仍待验证。
++原厂 HDR 组件保留场景判定和原有曝光选择。JPEG 厂商 EXIF 的 `Hdr` 字段可辅助验证。此前的一张 200MP 原图为 16384 × 12288 且标记 `Hdr=off`。v0.1.6 在 v0.1.5 基础上增加 200MP Auto HDR 场景强制入口：当高像素 HDR 组件已就绪、偏好为 auto/on/normal 且组件未被静音时，把原厂 HDR 场景回调的 false 改为 true，并在原厂偏好应用前维持该场景状态。模块不直接伪造 `xiaomi.hdr.enabled` 或多帧数量，仍由原厂状态机生成 CaptureRequest 与曝光策略。显式 off、静音或空组件会保留原厂行为。该改动是代码路径修复，实际 HAL 接受与融合仍须后续设备验证。
++
++## v0.1.6 行为变更
++
++v0.1.5 只暴露了 Auto HDR 组件并观察原厂场景回调；当场景检测一直返回 false 时，原厂请求中的 `xiaomi.hdr.enabled` 仍为 false，因此不会进入 HDR。v0.1.6 改为在 200MP 的 Auto/On 状态下，把正向场景状态送入原厂 `r6.b` 状态机，避免直接硬写 HDR 布尔标签。这样能修复应用层触发条件，但不能保证 ISP/HAL 一定接受该组合，也不能把“请求启用”当成“多帧融合成功”。强制 Auto HDR 可能增加拍摄耗时，并对运动物体产生鬼影；用户选择 Off 时不覆盖。
+ 
+ ## 构建
+ 
