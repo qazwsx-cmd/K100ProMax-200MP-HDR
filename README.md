@@ -25,6 +25,7 @@ A device-specific LSPosed/libxposed research project for the stock Xiaomi Camera
 - `patches/v0.1.6.patch` — source diff from v0.1.5 to v0.1.6.
 - `scripts/` — read-only device diagnostic script for v0.1.5.
 - `reports/Camera_6.7_Algorithm_Audit_zh.md` — full camera algorithm audit, including HDR/MIA2 findings and broader camera image-quality research.
+- `reports/Device_Diagnostic_2026-11-24.md` — latest read-only device diagnostic and evidence interpretation.
 - `docs/HDR_RESEARCH_SUMMARY.md` — focused summary of the HDR path and evidence boundaries.
 - `docs/PROJECT_STATUS.md` — latest confirmed project status and outstanding work.
 - `docs/BUILD_AND_INSTALL.md` — build requirements and safe installation notes.
